@@ -1,0 +1,9 @@
+[submodule "lib/EthernetBonjour"]
+	path = lib/EthernetBonjour
+	url = https://github.com/TrippyLighting/EthernetBonjour
+[submodule "lib/Ethernet3"]
+	path = lib/Ethernet3
+	url = https://github.com/sstaub/Ethernet3
+[submodule "lib/TimerOne"]
+	path = lib/TimerOne
+	url = https://github.com/PaulStoffregen/TimerOne
