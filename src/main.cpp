@@ -1,12 +1,12 @@
 // clang-format off
 #include <Arduino.h>
 #include <SPI.h>
-#include <Ethernet3.h>
+#include <Ethernet.h>
 #include <EthernetBonjour.h>
-#include <TimerOne.h>
 #include <EEPROM.h>
 // clang-format on
 
+#define SI_UDP_TRACKING_PPS       25
 #define SI_UDP_PACKET_TAG         0x93ADC7F5
 #define SI_UDP_PACKET_TAG_SIZE    sizeof(uint32_t)
 #define SI_UDP_PACKET_HEADER_SIZE sizeof(uint32_t) + sizeof(uint8_t)
@@ -17,6 +17,10 @@
 byte buf[256];
 byte sbuf[64];
 byte mac[] = { 0x00, 0x19, 0x7C, 0xEF, 0xFE, 0xED };
+
+unsigned long last_send = 0;
+bool do_send            = false;
+
 EthernetUDP udps;
 
 IPAddress stream_output_addr;
@@ -37,9 +41,28 @@ enum class packet_type : byte {
     track_stream_disable_resp,
 };
 
+struct si_packet_header {
+    uint32_t ident;
+    packet_type ty;
+};
+
+struct si_ipinfo_packet {
+    uint32_t ident;
+    packet_type ty;
+    uint8_t ip[4];
+    uint8_t subnet[4];
+};
+
+int s = sizeof(IPAddress);
+
+si_packet_header* get_header(byte* buf)
+{
+    return (si_packet_header*) buf;
+}
+
 void buffer_init(byte* buf)
 {
-    *((uint32_t*) buf) = SI_UDP_PACKET_TAG;
+    get_header(buf)->ident = SI_UDP_PACKET_TAG;
 }
 
 byte* pack_data_start(byte* buf)
@@ -49,19 +72,12 @@ byte* pack_data_start(byte* buf)
 
 bool pack_valid(byte* buf, size_t s)
 {
-    return (s >= 5) && (SI_UDP_PACKET_TAG == *((uint32_t*) buf));
+    return (s >= 5) && (get_header(buf)->ident == SI_UDP_PACKET_TAG);
 }
 
 void pack_set_ty(byte* buf, packet_type t)
 {
-    *(buf + SI_UDP_PACKET_TAG_SIZE) = (byte) t;
-}
-
-packet_type pack_get_ty(byte* buf, size_t size)
-{
-    if (not size) return packet_type::error;
-
-    return (packet_type) * (buf + SI_UDP_PACKET_TAG_SIZE);
+    get_header(buf)->ty = t;
 }
 
 bool pack_get_startup_addr(byte* buf,
@@ -72,7 +88,7 @@ bool pack_get_startup_addr(byte* buf,
 
     uint8_t* addrdata = pack_data_start(buf);
 
-    if (s <= 13) return true;
+    if (s <= 12) return true;
 
     *addr   = IPAddress(addrdata[0], addrdata[1], addrdata[2], addrdata[3]);
     *subnet = IPAddress(addrdata[4], addrdata[5], addrdata[6], addrdata[7]);
@@ -107,7 +123,7 @@ void set_startup_addr(byte* buf, size_t s)
 
     IPAddress ip;
     IPAddress subnet;
-    
+
     if (pack_get_startup_addr(buf, s, &ip, &subnet)) return;
 
     uint8_t* ipdata = pack_data_start(buf);
@@ -136,6 +152,14 @@ void get_startup_addr(IPAddress* ip, IPAddress* subnet)
 
 void tracker_run()
 {
+    unsigned long time = millis();
+
+    if (time - last_send < 1000 / SI_UDP_TRACKING_PPS) return;
+
+    last_send = time;
+
+    if (!do_send) return;
+
     buffer_init(sbuf);
     pack_set_ty(sbuf, packet_type::track_stream_data);
 
@@ -144,12 +168,15 @@ void tracker_run()
     udps.write(sbuf, SI_UDP_PACKET_HEADER_SIZE);
 
     udps.endPacket();
+
+    udps.flush();
 }
 
 void stream_disable()
 {
     Serial.println("Tracker data streaming disabled");
-    Timer1.stop();
+
+    do_send = false;
 }
 
 void stream_enable()
@@ -159,20 +186,28 @@ void stream_enable()
     stream_output_port = udps.remotePort();
     stream_output_addr = udps.remoteIP();
 
-    Timer1.initialize(5000);
-    Timer1.attachInterrupt(tracker_run);
+    do_send = true;
+}
+
+void update_bonjour()
+{
+    Serial.println("Running Bonjour");
+    EthernetBonjour.run();
 }
 
 void setup()
 {
     Serial.begin(9600);
 
+    delay(5000);
+
+
     Serial.println("Setup begin");
 
-    Ethernet.setCsPin(10);
+    // Ethernet.setCsPin(10);
 
 
-    if (should_use_dhcp()) {
+    if (!should_use_dhcp()) {
 
         IPAddress ip, subnet;
         get_startup_addr(&ip, &subnet);
@@ -187,50 +222,35 @@ void setup()
     else
         Ethernet.begin(mac);
 
-    int status = EthernetBonjour.begin("si_headtracker");
+    // Ethernet.phyMode(phyMode_t::FULL_DUPLEX_100);
+
+    int status = EthernetBonjour.begin("siheadtracker");
 
     if (status != 1) {
         Serial.print("Could not initialize Bonjour Library. Code: ");
         Serial.println(status);
     }
 
-    EthernetBonjour.addServiceRecord(
-        "headtracker._tracking_stream", 10452, MDNSServiceUDP);
+    EthernetBonjour.addServiceRecord("headtracker._trackingstream",
+                                     SI_UDP_CONTROL_INPUT_PORT,
+                                     MDNSServiceUDP);
 
     Serial.println("Setup done");
 
-    udps.begin(3456);
+    udps.begin(SI_UDP_CONTROL_INPUT_PORT);
 }
 
 void loop()
 {
-    noInterrupts();
     if (int psize = udps.parsePacket()) {
 
         if (psize > 256) return;
-
-        Serial.print("Received packet of size ");
-        Serial.println(psize);
-        Serial.print("From ");
-
-        IPAddress remote = udps.remoteIP();
-
-        for (int i = 0; i < 4; i++) {
-            Serial.print(remote[i], DEC);
-            if (i < 3) { Serial.print("."); }
-        }
-
-        Serial.print(", port ");
-        Serial.println(udps.remotePort());
 
         udps.readBytes(buf, psize);
 
         if (pack_valid(buf, psize)) {
 
-            Serial.print("Packet Type: ");
-            Serial.println((int) pack_get_ty(buf, psize));
-
-            switch (pack_get_ty(buf, psize)) {
+            switch (get_header(buf)->ty) {
                 case packet_type::error:
                     Serial.println("Received Error Packet");
                     break;
@@ -255,6 +275,6 @@ void loop()
             Serial.println("Invalid packet");
         }
     }
+    tracker_run();
     EthernetBonjour.run();
-    interrupts();
 }
