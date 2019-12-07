@@ -1,12 +1,18 @@
 // clang-format off
+#define DEBUG
+#define I2CDEV_IMPLEMENTATION I2CDEV_BUILTIN_FASTWIRE
+
 #include <Arduino.h>
 #include <SPI.h>
 #include <Ethernet.h>
 #include <EthernetBonjour.h>
 #include <EEPROM.h>
+#include <MPU6050_6Axis_MotionApps20.h>
 // clang-format on
 
-#define SI_UDP_TRACKING_PPS       25
+#include "net.h"
+
+#define SI_UDP_TRACKING_PPS       50
 #define SI_UDP_PACKET_TAG         0x93ADC7F5
 #define SI_UDP_PACKET_TAG_SIZE    sizeof(uint32_t)
 #define SI_UDP_PACKET_HEADER_SIZE sizeof(uint32_t) + sizeof(uint8_t)
@@ -16,12 +22,24 @@
 
 byte buf[256];
 byte sbuf[64];
+byte mpubuf[64];
 byte mac[] = { 0x00, 0x19, 0x7C, 0xEF, 0xFE, 0xED };
+
+Quaternion qbuf[5];
+Quaternion* qbuf_ptr = qbuf;
+
+int mpu_expected_packet_size = 0;
+
+int16_t blink = 0;
 
 unsigned long last_send = 0;
 bool do_send            = false;
 
 EthernetUDP udps;
+MPU6050 mpu;
+
+IPAddress zerconf_addr(192,168,0,135);
+IPAddress zerconf_subnet(255,255,255,0);
 
 IPAddress stream_output_addr;
 uint16_t stream_output_port;
@@ -52,8 +70,6 @@ struct si_ipinfo_packet {
     uint8_t ip[4];
     uint8_t subnet[4];
 };
-
-int s = sizeof(IPAddress);
 
 si_packet_header* get_header(byte* buf)
 {
@@ -98,7 +114,6 @@ bool pack_get_startup_addr(byte* buf,
 
 bool alive_req(EthernetUDP* socket, byte* buf, size_t s)
 {
-    Serial.println("Responding to alive request");
     socket->beginPacket(socket->remoteIP(), socket->remotePort());
     pack_set_ty(buf, packet_type::alive_resp);
     socket->write(buf, s);
@@ -109,18 +124,11 @@ void set_dhcp_enabled(byte* buf, size_t s)
 {
     uint8_t* data = pack_data_start(buf);
 
-    if (*data == SI_FLAG_DHCP_DISABLED)
-        Serial.println("DHCP disabled");
-    else
-        Serial.println("DHCP enabled");
-
     EEPROM.write(0, *data);
 }
 
 void set_startup_addr(byte* buf, size_t s)
 {
-    Serial.println("Setting startup address: ");
-
     IPAddress ip;
     IPAddress subnet;
 
@@ -131,8 +139,6 @@ void set_startup_addr(byte* buf, size_t s)
     for (int i = 0; i < 8; ++i) EEPROM.write(i + 1, ipdata[i]);
 
     EEPROM.write(0, SI_FLAG_DHCP_DISABLED);
-
-    Serial.println("Written new IP Address and Subnet Mask to EEPROM");
 }
 
 bool should_use_dhcp()
@@ -158,31 +164,67 @@ void tracker_run()
 
     last_send = time;
 
+    /*blink = !blink;
+    digitalWrite(3, blink);
+*/
+
+    if(!mpu.testConnection()){
+                
+        digitalWrite(3, 1);
+        
+        Fastwire::setup(100, true);
+
+        Serial.println("init");
+        mpu.initialize();
+
+        Serial.println("dmp_init");
+        mpu.dmpInitialize();
+
+        Serial.println("dmp_enable");
+        mpu.setDMPEnabled(true);
+
+        digitalWrite(3, 0);
+    }
+
     if (!do_send) return;
+
+    int mpuIntStatus = mpu.getIntStatus();
+    int fifocnt      = mpu.getFIFOCount();
+
+    Quaternion q;
+
+    if (mpuIntStatus & _BV(MPU6050_INTERRUPT_DMP_INT_BIT)
+        && fifocnt >= mpu_expected_packet_size) {
+
+        mpu.getFIFOBytes(mpubuf, mpu_expected_packet_size);
+        mpu.dmpGetQuaternion(&q, mpubuf);
+        mpu.resetFIFO();
+    }
+    else return;
 
     buffer_init(sbuf);
     pack_set_ty(sbuf, packet_type::track_stream_data);
 
     udps.beginPacket(stream_output_addr, stream_output_port);
 
-    udps.write(sbuf, SI_UDP_PACKET_HEADER_SIZE);
+    memcpy(pack_data_start(sbuf), &q, sizeof(Quaternion));
+
+    udps.write(sbuf, SI_UDP_PACKET_HEADER_SIZE + sizeof(Quaternion));
 
     udps.endPacket();
 
     udps.flush();
+
+    digitalWrite(3, 1);
 }
 
 void stream_disable()
 {
-    Serial.println("Tracker data streaming disabled");
-
     do_send = false;
 }
 
 void stream_enable()
 {
-    Serial.println("Tracker data streaming enabled");
-
     stream_output_port = udps.remotePort();
     stream_output_addr = udps.remoteIP();
 
@@ -195,20 +237,8 @@ void update_bonjour()
     EthernetBonjour.run();
 }
 
-void setup()
+void eth_init_static()
 {
-    Serial.begin(9600);
-
-    delay(5000);
-
-
-    Serial.println("Setup begin");
-
-    // Ethernet.setCsPin(10);
-
-
-    if (!should_use_dhcp()) {
-
         IPAddress ip, subnet;
         get_startup_addr(&ip, &subnet);
 
@@ -218,26 +248,74 @@ void setup()
         Serial.println(subnet);
 
         Ethernet.begin(mac, ip, subnet);
+}
+
+void setup()
+{
+    Serial.begin(9600);
+
+    Fastwire::setup(100, true);
+    I2Cdev::readTimeout = 5;
+
+    pinMode(3, OUTPUT);
+    pinMode(4, OUTPUT);
+
+    digitalWrite(3, 1);
+    digitalWrite(4, 1);
+
+    delay(2000);
+
+    digitalWrite(3, 0);
+    digitalWrite(4, 0);
+
+    mpu.initialize();
+
+    bool DHCP_SUCCES = false;
+
+    if (!should_use_dhcp()){
+        DHCP_SUCCES = true; 
+        eth_init_static();
     }
-    else
-        Ethernet.begin(mac);
+    else {
+        if(!Ethernet.begin(mac))
+            Ethernet.begin(mac, zerconf_addr, zerconf_subnet);
 
-    // Ethernet.phyMode(phyMode_t::FULL_DUPLEX_100);
+        DHCP_SUCCES = true;
+    }
 
-    int status = EthernetBonjour.begin("siheadtracker");
+    int status = EthernetBonjour.begin("si_htr_001");
 
     if (status != 1) {
         Serial.print("Could not initialize Bonjour Library. Code: ");
         Serial.println(status);
     }
 
-    EthernetBonjour.addServiceRecord("headtracker._trackingstream",
-                                     SI_UDP_CONTROL_INPUT_PORT,
-                                     MDNSServiceUDP);
+    Ethernet.maintain();
+
+    EthernetBonjour.addServiceRecord(
+        "tracker._trs", SI_UDP_CONTROL_INPUT_PORT, MDNSServiceUDP);
+
+    udps.begin(SI_UDP_CONTROL_INPUT_PORT);
+
+
+    bool devStatus = mpu.dmpInitialize();
+
+    // supply your own gyro offsets here, scaled for min sensitivity
+    mpu.setXGyroOffset(220);
+    mpu.setYGyroOffset(76);
+    mpu.setZGyroOffset(-85);
+    mpu.setZAccelOffset(1788);    // 1688 factory default for my test chip
+
+    mpu.setDMPEnabled(true);
+
+    mpu_expected_packet_size = mpu.dmpGetFIFOPacketSize();
 
     Serial.println("Setup done");
 
-    udps.begin(SI_UDP_CONTROL_INPUT_PORT);
+    delay(500);
+
+    digitalWrite(3, devStatus == 0);
+    digitalWrite(4, DHCP_SUCCES);
 }
 
 void loop()
@@ -275,6 +353,8 @@ void loop()
             Serial.println("Invalid packet");
         }
     }
+
     tracker_run();
+    Ethernet.maintain();
     EthernetBonjour.run();
 }

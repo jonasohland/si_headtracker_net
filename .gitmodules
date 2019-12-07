@@ -4,3 +4,6 @@
 [submodule "lib/Ethernet"]
 	path = lib/Ethernet
 	url = https://github.com/PaulStoffregen/Ethernet
+[submodule "third_party/i2cdevlib"]
+	path = third_party/i2cdevlib
+	url = https://github.com/jrowberg/i2cdevlib
