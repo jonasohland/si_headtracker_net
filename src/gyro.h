@@ -10,6 +10,6 @@
 
 void si_gy_prepare(si_device_state_t*);
 
-void si_gyro_check(MPU6050* mpu, si_device_state* state);
+void si_gyro_check(MPU6050* mpu, si_conf_t*, si_device_state* state);
 
 void si_gy_run(MPU6050* mpu, EthernetUDP* socket, si_device_state_t* state, si_conf_t* conf);

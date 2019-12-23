@@ -15,63 +15,80 @@ void si_eth_hwprepare()
 
 void si_eth_hwreset()
 {
+    EthernetBonjour.removeServiceRecord(HEADTRACKER_SERVICE_PORT, MDNSServiceUDP);
+    // WZ5500 might still be sending packets
+    delay(1000);
+
     pinMode(SI_NET_RESET_PIN, OUTPUT);
     digitalWrite(SI_NET_RESET_PIN, LOW);
+
     // rebooting
-    delay(500);
+    delay(1000);
 }
 
 void si_eth_connect(si_conf_t* conf)
 {
-    if (conf->network_flags & _BV(1)) {    // DHCP enabled
+    if (SI_NET_FLAG(conf, SI_FLAG_NET_DHCP)) {    // DHCP enabled
 
         if (!Ethernet.begin(mac)) {
-            Ethernet.begin(mac, IPAddress(ZEROCONF_IP));
-            Ethernet.setSubnetMask(ZEROCONF_SUBNET);
+
+            // disable dhcp
+            conf->network_flags &= ~SI_FLAG_NET_DHCP;
+            si_eth_store(conf);
+
+            // reboot
+            si_eth_hwreset();
         }
     }
     else {    // DHCP disabled
 
-        Ethernet.begin(mac, IPAddress(conf->static_ipaddr));
-        Ethernet.setSubnetMask(conf->static_subnet);
+        Ethernet.begin(mac, IPAddress(conf->local_ip));
+        Ethernet.setSubnetMask(conf->local_subnet);
     }
 }
 
-void si_eth_init(EthernetUDP* socket, si_conf_t* running_conf)
+void si_eth_init(EthernetUDP* socket,
+                 si_conf_t* running_conf,
+                 char* bnj_host,
+                 char* bnj_serv)
 {
     EEPROM.get(0, *running_conf);
 
     bool eep_update = false;
 
-    // clear reboot flag if set
-    if (running_conf->device_flags & _BV(1)) {
-        running_conf->device_flags &= ~_BV(1);
-        eep_update = true;
-    }
+    running_conf->device_flags
+        &= ~(SI_FLAG_CFG_DEV_RESET | SI_FLAG_CFG_STR_ENABLED | SI_FLAG_CFG_NO_REQ);
 
-    // clear stream enabled flag
-    if (running_conf->device_flags & _BV(2)){
-        running_conf->device_flags &= ~_BV(2);
-        eep_update = true;
-    }
+    running_conf->status_flags
+        &= ~(SI_FLAG_ST_GY_CONNECTED | SI_FLAG_ST_GY_READY);
 
-    if (eep_update)
-        EEPROM.put(0, *running_conf);
+    // clear reboot or stream flag if set
+    if ((running_conf->device_flags & SI_FLAG_CFG_DEV_RESET)
+        || (running_conf->device_flags & SI_FLAG_CFG_STR_ENABLED))
+        eep_update = true;
+
+    if (eep_update) EEPROM.put(0, *running_conf);
 
     si_eth_connect(running_conf);
 
     socket->begin(HEADTRACKER_SERVICE_PORT);
 
-    EthernetBonjour.begin("si_htrk_01");
+    char n0     = '0' + ((running_conf->network_flags >> 2) / 10);
+    char n1     = '0' + ((running_conf->network_flags >> 2) % 10);
+    bnj_host[8] = n0;
+    bnj_host[9] = n1;
+    bnj_serv[8] = n0;
+    bnj_serv[9] = n1;
+
+    EthernetBonjour.begin(bnj_host);
 
     EthernetBonjour.addServiceRecord(
-        "tracker01._htr", HEADTRACKER_SERVICE_PORT, MDNSServiceUDP);
+        bnj_serv, HEADTRACKER_SERVICE_PORT, MDNSServiceUDP);
 }
 
-void si_eth_set(si_conf_t* nconf, si_conf_t* conf)
+void si_eth_store(si_conf_t* nconf)
 {
-    *conf = *nconf;
-    EEPROM.put(0, *conf);
+    EEPROM.put(0, *nconf);
 }
 
 uint8_t si_eth_pck_parse(EthernetUDP* socket, si_conf_t* conf, uint8_t* buffer)
@@ -82,36 +99,70 @@ uint8_t si_eth_pck_parse(EthernetUDP* socket, si_conf_t* conf, uint8_t* buffer)
     // wrong preamble
     if (p->preamble != SI_PACKET_PREAMBLE) return 0;
 
-    Serial.println(IPAddress(p->conf.static_ipaddr));
-    Serial.println(IPAddress(p->conf.static_subnet));
-
-    *conf = p->conf;
-
-    // write current configuration to eeprom
-    if (p->conf.device_flags & _BV(0)) si_eth_set(&p->conf, conf);
-
     return 1;
 }
 
-void si_eth_send_pck(EthernetUDP* socket, si_device_state_t* st, si_data_packet_t* p)
+void si_eth_send_pck(EthernetUDP* socket,
+                     si_conf_t* conf,
+                     si_device_state_t* st,
+                     si_data_packet_t* p)
 {
-    socket->beginPacket(st->sender_ip, st->sender_port);
+    socket->beginPacket(conf->tgt_addr, conf->tgt_port);
     socket->write((uint8_t*) p, sizeof(si_data_packet_t));
     socket->endPacket();
+
+    st->led_states ^= SI_NET_ST_LED;
+    digitalWrite(SI_NET_STATUS_PIN, (st->led_states & SI_NET_ST_LED));
 }
 
-void si_eth_pck_respond(EthernetUDP* socket, si_conf_t* conf)
+void si_eth_conf_update(si_device_state_t* st,
+                        si_conf_t* conf,
+                        si_conf_packet_t* pck)
 {
-    socket->beginPacket(socket->remoteIP(), socket->remotePort());
+    *conf = pck->conf;
+    si_eth_conf_update(st, conf);
+}
 
-    socket->write((uint8_t)(SI_PACKET_PREAMBLE << 24));
-    socket->write((uint8_t)(SI_PACKET_PREAMBLE << 16));
-    socket->write((uint8_t)(SI_PACKET_PREAMBLE << 8));
-    socket->write((uint8_t) SI_PACKET_PREAMBLE);
+void si_eth_conf_update(si_device_state_t* st, si_conf_t* conf)
+{
+    if (st->mpu_status == SI_MPU_CONNECTED) {
+        conf->status_flags |= SI_FLAG_ST_GY_CONNECTED;
+        conf->status_flags |= SI_FLAG_ST_GY_READY;
+    }
+    else if (st->mpu_status == SI_MPU_FOUND) {
+        conf->status_flags |= SI_FLAG_ST_GY_CONNECTED;
+        conf->status_flags &= ~SI_FLAG_ST_GY_READY;
+    }
+    else {
+        conf->status_flags &= ~SI_FLAG_ST_GY_CONNECTED;
+        conf->status_flags &= ~SI_FLAG_ST_GY_READY;
+    }
+}
 
-    socket->write((uint8_t*) &conf, sizeof(si_conf_t));
+void si_eth_pck_send(EthernetUDP* socket,
+                     si_conf_t* conf,
+                     si_device_state_t* st)
+{
+    conf->device_flags |= SI_FLAG_CFG_NO_REQ;
+    si_eth_pck_respond(socket, conf, st);
+}
+
+void si_eth_pck_respond(EthernetUDP* socket,
+                        si_conf_t* conf,
+                        si_device_state_t* st)
+{
+    socket->beginPacket(st->sender_ip, st->sender_port);
+
+    si_conf_packet_t pck;
+
+    pck.preamble = SI_PACKET_PREAMBLE;
+    pck.conf     = *conf;
+
+    socket->write((uint8_t*) &pck, sizeof(si_conf_packet_t));
 
     socket->endPacket();
+
+    conf->device_flags &= ~SI_FLAG_CFG_NO_REQ;
 }
 
 void si_eth_recv(EthernetUDP* socket,
@@ -124,17 +175,33 @@ void si_eth_recv(EthernetUDP* socket,
         if (psize > 256) return socket->flush();
 
         socket->readBytes(buffer, psize);
-
         socket->flush();
 
         if (si_eth_pck_parse(socket, conf, buffer)) {
 
-            si_eth_pck_respond(socket, conf);
+            bool reset = false;
+
+            si_conf_packet_t* pck = (si_conf_packet_t*) buffer;
+            si_conf_t* nconf      = &pck->conf;
 
             st->sender_ip   = socket->remoteIP();
             st->sender_port = socket->remotePort();
 
-            if (conf->device_flags & _BV(1)) si_eth_hwreset();
+            if (!(SI_CONF_FLAG(nconf, SI_FLAG_CFG_REQ_ONLY))) {
+
+                si_eth_conf_update(st, conf, pck);
+
+                if (SI_CONF_FLAG(nconf, SI_FLAG_CFG_UPDATE)) si_eth_store(conf);
+
+                st->sender_ip   = socket->remoteIP();
+                st->sender_port = socket->remotePort();
+
+                if (SI_CONF_FLAG(nconf, SI_FLAG_CFG_DEV_RESET)) reset = true;
+            }
+
+            si_eth_pck_respond(socket, conf, st);
+
+            if (reset) si_eth_hwreset();
         }
     }
 }

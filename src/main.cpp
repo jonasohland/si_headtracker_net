@@ -12,6 +12,10 @@
 #include "net.h"
 #include "gyro.h"
 
+char bonjour_hostname[11] = "si_htrk_00";
+char bonjour_servicename[17] = "si_htrk_00._htrk";
+
+
 uint8_t buffer[256];
 
 bool ledstate = false;
@@ -22,21 +26,21 @@ si_device_state_t state;
 EthernetUDP data_socket;
 MPU6050 mpu;
 
-void blink_callback(){
-}
-
 void setup()
 {
     si_eth_hwprepare();
 
     Serial.begin(9600);
-    pinMode(3, OUTPUT);
-    pinMode(4, OUTPUT);
-    pinMode(5, OUTPUT);
+
+    pinMode(SI_DV_STATUS_PIN, OUTPUT);
+    pinMode(SI_NET_STATUS_PIN, OUTPUT);
+    pinMode(SI_GY_STATUS_PIN, OUTPUT);
+
+    digitalWrite(SI_DV_STATUS_PIN, HIGH);
 
     delay(1000);
 
-    si_eth_init(&data_socket, &running_config);
+    si_eth_init(&data_socket, &running_config, bonjour_hostname, bonjour_servicename);
     si_gy_prepare(&state);
 }
 
