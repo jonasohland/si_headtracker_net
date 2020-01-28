@@ -107,6 +107,8 @@ void si_eth_send_pck(EthernetUDP* socket,
                      si_device_state_t* st,
                      si_data_packet_t* p)
 {
+    p->device_id = (conf->network_flags >> 2);
+
     socket->beginPacket(conf->tgt_addr, conf->tgt_port);
     socket->write((uint8_t*) p, sizeof(si_data_packet_t));
     socket->endPacket();
@@ -136,6 +138,11 @@ void si_eth_conf_update(si_device_state_t* st, si_conf_t* conf)
     else {
         conf->status_flags &= ~SI_FLAG_ST_GY_CONNECTED;
         conf->status_flags &= ~SI_FLAG_ST_GY_READY;
+    }
+
+    if(conf->status_flags & SI_FLAG_ST_RESET_ORIENTATION){
+        st->gyro_flags |= SI_FLAG_RESET_ORIENTATION;
+        conf->status_flags &= ~(SI_FLAG_ST_RESET_ORIENTATION);
     }
 }
 

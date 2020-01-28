@@ -8,6 +8,9 @@
 
 #define SI_PACKET_PREAMBLE 0x3f39e3cc
 
+#define SI_FLAG_RESET_ORIENTATION _BV(0)
+#define SI_FLAG_APPLY_OFFSETS     _BV(1)
+
 #define SI_FLAG_CFG_UPDATE         _BV(0)
 #define SI_FLAG_CFG_DEV_RESET      _BV(1)
 #define SI_FLAG_CFG_STR_ENABLED    _BV(2)
@@ -16,10 +19,15 @@
 #define SI_FLAG_CFG_NO_REQ         _BV(6)
 #define SI_FLAG_CFG_REQ_ONLY       _BV(7)
 
-#define SI_FLAG_NET_DHCP _BV(1)
+#define SI_FLAG_NET_DHCP _BV(0)
 
-#define SI_FLAG_ST_GY_CONNECTED _BV(0)
-#define SI_FLAG_ST_GY_READY     _BV(1)
+
+#define SI_FLAG_ST_GY_CONNECTED      _BV(0)
+#define SI_FLAG_ST_GY_READY          _BV(1)
+#define SI_FLAG_ST_RESET_ORIENTATION _BV(2)
+#define SI_FLAG_ST_INVERT_X          _BV(3)
+#define SI_FLAG_ST_INVERT_Y          _BV(4)
+#define SI_FLAG_ST_INVERT_Z          _BV(5)
 
 // clang-format off
 
@@ -62,17 +70,18 @@ typedef struct si_device_state {
     si_mpu_status_t mpu_status;
     si_mpu_status_t last_mpu_status;
 
+    uint8_t gyro_flags;
+
     uint16_t mpu_expected_packet_size = 16;
     uint16_t sender_port;
-
-    int16_t filter_arr[16];
-    int16_t* filter_write_head;
 
     uint64_t main_clk_tmt;
     uint64_t mpu_sample_tmt;
     uint64_t uint32_t;
 
     IPAddress sender_ip;
+
+    struct Quaternion_d { float w; float x; float y; float z; } offset;
 
 } si_device_state_t;
 
@@ -103,7 +112,10 @@ typedef struct si_data_packet {
 
     uint32_t preamble;
     uint16_t device_id;
-    int16_t data[4];
+    int16_t w;
+    int16_t x;
+    int16_t y;
+    int16_t z;
 
 } si_data_packet_t;
 

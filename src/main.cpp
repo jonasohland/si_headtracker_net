@@ -30,6 +30,8 @@ void setup()
 {
     si_eth_hwprepare();
 
+    delay(2000);
+
     Serial.begin(9600);
 
     pinMode(SI_DV_STATUS_PIN, OUTPUT);

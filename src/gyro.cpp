@@ -61,7 +61,6 @@ void si_sample(MPU6050* mpu,
                si_conf_t* conf)
 {
     uint8_t buf[64];
-    Quaternion q;
 
     int mpuIntStatus = mpu->getIntStatus();
     int fifocnt      = mpu->getFIFOCount();
@@ -71,8 +70,43 @@ void si_sample(MPU6050* mpu,
         si_data_packet_t pck;
 
         mpu->getFIFOBytes(buf, st->mpu_expected_packet_size);
-        mpu->dmpGetQuaternion(pck.data, buf);
+        mpu->dmpGetQuaternion(&pck.w, buf);
         mpu->resetFIFO();
+
+        if(st->gyro_flags & SI_FLAG_RESET_ORIENTATION){
+
+            Serial.println("oreset");
+
+            Quaternion current_rot(pck.w / 16384.f, pck.x / 16384.f, pck.y / 16384.f, pck.z / 16384.f);
+
+            current_rot = current_rot.getConjugate();
+
+            memcpy(&st->offset, &current_rot, sizeof(Quaternion)); 
+
+            st->gyro_flags |= SI_FLAG_APPLY_OFFSETS;
+            st->gyro_flags &= ~(SI_FLAG_RESET_ORIENTATION);
+        }
+
+        if(st->gyro_flags & SI_FLAG_APPLY_OFFSETS){
+
+            Quaternion current_rot(pck.w / 16384.f, pck.x / 16384.f, pck.y / 16384.f, pck.z / 16384.f);
+
+            Quaternion nq = current_rot.getProduct(*((Quaternion*) &st->offset));
+
+            pck.w = nq.w * 16384;
+            pck.x = nq.x * 16384;
+            pck.y = nq.y * 16384;
+            pck.z = nq.z * 16384;
+        }
+
+        if(conf->status_flags & SI_FLAG_ST_INVERT_X)
+            pck.x = -pck.x;
+
+        if(conf->status_flags & SI_FLAG_ST_INVERT_Y)
+            pck.y = -pck.y;
+
+        if(conf->status_flags & SI_FLAG_ST_INVERT_Z)
+            pck.z = -pck.z;
 
         si_eth_send_pck(sock, conf, st, &pck);
     }
