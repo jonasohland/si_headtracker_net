@@ -35,18 +35,20 @@
 #define SI_STATUS_FLAG(conf_ptr, flag) conf_ptr->status_flags & flag
 #define SI_NET_FLAG(conf_ptr, flag)    conf_ptr->network_flags & flag
 
-//clang-format on
+// clang-format on
 
-#define SI_DV_STATUS_PIN 4
-#define SI_NET_STATUS_PIN 3
-#define SI_GY_STATUS_PIN 2
+#define SI_DV_STATUS_PIN 21
+#define SI_NET_STATUS_PIN 17
+#define SI_GY_STATUS_PIN 16
+#define SI_NET_RESET_CONF_PIN 2
 #define SI_DV_ST_LED _BV(0)
 #define SI_NET_ST_LED _BV(1)
 #define SI_GY_ST_LED _BV(2)
 
 #define SI_LED_STATE(state, led) (state->led_states & led) == 1
 
-#define SI_NET_RESET_PIN 6
+#define SI_HWRESET_PIN 6
+#define SI_ETH_RESET_PIN 21
 
 #define SI_LED_FLIP(state, led) state->led_states ^= led
 

@@ -10,7 +10,8 @@ byte mac[] = { 0x00, 0x19, 0x7C, 0xEF, 0xFE, 0xED };
 
 void si_eth_hwprepare()
 {
-    digitalWrite(SI_NET_RESET_PIN, HIGH);
+    digitalWrite(SI_HWRESET_PIN, HIGH);
+    digitalWrite(SI_ETH_RESET_PIN, LOW);
 }
 
 void si_eth_hwreset()
@@ -19,8 +20,9 @@ void si_eth_hwreset()
     // WZ5500 might still be sending packets
     delay(1000);
 
-    pinMode(SI_NET_RESET_PIN, OUTPUT);
-    digitalWrite(SI_NET_RESET_PIN, LOW);
+    // pinMode(SI_HWRESET_PIN, OUTPUT);
+    // digitalWrite(SI_HWRESET_PIN, LOW);
+    SCB_AIRCR = 0x05FA0004;
 
     // rebooting
     delay(1000);
@@ -52,9 +54,25 @@ void si_eth_init(EthernetUDP* socket,
                  char* bnj_host,
                  char* bnj_serv)
 {
-    EEPROM.get(0, *running_conf);
+    digitalWrite(SI_ETH_RESET_PIN, LOW);
+    delay(500);
+
 
     bool eep_update = false;
+
+    if(!digitalRead(SI_NET_RESET_CONF_PIN)) {
+
+        running_conf->local_ip = IPAddress(169,254,145,23);
+        running_conf->local_subnet = IPAddress(255,255,255,0);
+        running_conf->network_flags &= ~SI_FLAG_NET_DHCP;
+        running_conf->sampling_freq = 25;
+        running_conf->status_flags &= ~(SI_FLAG_ST_INVERT_X | SI_FLAG_ST_INVERT_Y | SI_FLAG_ST_INVERT_Z);
+        
+        eep_update = true;
+
+    } else 
+        EEPROM.get(0, *running_conf);
+    
 
     running_conf->device_flags
         &= ~(SI_FLAG_CFG_DEV_RESET | SI_FLAG_CFG_STR_ENABLED | SI_FLAG_CFG_NO_REQ);
